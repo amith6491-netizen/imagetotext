@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image to Text</title>
+<style>
+:root{--bg:#eef1f6;--ink:#14213d;--muted:#5b6785;--card:#fff;--line:#cfd6e4;--accent:#2b59ff;--ok:#12805c;--err:#b42318}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1524;--ink:#e8ecf7;--muted:#97a3c0;--card:#18203a;--line:#2b3556;--accent:#7f9bff;--ok:#4cc9a0;--err:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Segoe UI",system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:32px 18px 64px}
+h1{font:700 2rem/1.15 Georgia,serif;margin:0 0 6px}
+p.sub{margin:0 0 24px;color:var(--muted)}
+#drop{border:2px dashed var(--line);background:var(--card);border-radius:14px;padding:34px 18px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s}
+#drop.over,#drop:focus-visible{border-color:var(--accent);outline:none}
+#drop strong{display:block;font-size:1.1rem}
+#drop span{color:var(--muted);font-size:.92rem}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:16px 0}
+select,button{font:inherit;padding:9px 14px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.spacer{flex:1}
+.item{display:grid;grid-template-columns:96px 1fr;gap:14px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+.item img{width:96px;height:96px;object-fit:cover;border-radius:8px;background:var(--bg)}
+.head{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.name{font-weight:600;word-break:break-all}
+.status{font-size:.85rem;color:var(--muted)}
+.status.done{color:var(--ok)}.status.error{color:var(--err)}
+progress{width:100%;height:6px;margin:8px 0}
+textarea{width:100%;min-height:110px;resize:vertical;font:.95rem/1.5 ui-monospace,Consolas,monospace;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px}
+.small{padding:5px 10px;font-size:.85rem}
+@media(max-width:520px){.item{grid-template-columns:1fr}.item img{width:100%;height:160px}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Image to Text</h1>
+  <p class="sub">Select several photos or screenshots of text. Only alphabet letters are kept: numbers, punctuation and symbols are removed. Everything runs in your browser; images are never uploaded.</p>
+
+  <div id="drop" tabindex="0" role="button" aria-label="Choose images">
+    <strong>Drop images here or click to choose</strong>
+    <span>PNG, JPG, WEBP, BMP. Select as many as you like.</span>
+  </div>
+  <input id="file" type="file" accept="image/*" multiple hidden>
+
+  <div class="row">
+    <label for="lang">Language</label>
+    <select id="lang">
+      <option value="eng">English</option>
+      <option value="hin">Hindi</option>
+      <option value="kan">Kannada</option>
+      <option value="tam">Tamil</option>
+      <option value="tel">Telugu</option>
+      <option value="fra">French</option>
+      <option value="deu">German</option>
+      <option value="spa">Spanish</option>
+    </select>
+    <label><input type="checkbox" id="shot" checked> Screenshot mode (skip icons and symbols)</label>
+    <span class="spacer"></span>
+    <button id="clear" disabled>Clear all</button>
+    <button id="run" class="primary" disabled>Convert to text</button>
+  </div>
+
+  <div id="list"></div>
+
+  <div id="combined" hidden>
+    <div class="row">
+      <strong>All text combined</strong>
+      <span class="spacer"></span>
+      <button id="copy">Copy</button>
+      <button id="download">Download .txt</button>
+    </div>
+    <textarea id="all" style="min-height:200px"></textarea>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const drop = $('drop'), file = $('file'), list = $('list'), runBtn = $('run'), clearBtn = $('clear');
+let items = []; // {file, url, el, text}
+
+function addFiles(fileList){
+  [...fileList].filter(f => f.type.startsWith('image/')).forEach(f => {
+    const url = URL.createObjectURL(f);
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.innerHTML = `<img alt=""><div>
+      <div class="head"><span class="name"></span><span class="status">Ready</span></div>
+      <progress max="1" value="0" hidden></progress>
+      <textarea placeholder="Extracted text will appear here" hidden></textarea>
+      <div class="row" hidden><button class="small copy">Copy</button></div></div>`;
+    el.querySelector('img').src = url;
+    el.querySelector('.name').textContent = f.name;
+    const cb = el.querySelector('.copy');
+    cb.onclick = () => copyFrom(el.querySelector('textarea'), cb);
+    list.appendChild(el);
+    items.push({file: f, url, el, text: '', done: false});
+  });
+  refresh();
+}
+
+function refresh(){
+  runBtn.disabled = !items.some(i => !i.done);
+  clearBtn.disabled = !items.length;
+}
+
+// Copy that works on file://, http and in-app browsers (falls back to execCommand)
+async function copyFrom(textarea, btn){
+  const text = textarea.value;
+  let ok = false;
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(text); ok = true;
+    }
+  }catch(e){}
+  if(!ok){
+    textarea.focus(); textarea.select(); textarea.setSelectionRange(0, text.length);
+    try{ ok = document.execCommand('copy'); }catch(e){}
+  }
+  const old = btn.dataset.label || btn.textContent;
+  btn.dataset.label = old;
+  btn.textContent = ok ? 'Copied!' : 'Press Ctrl+C';
+  setTimeout(() => btn.textContent = old, 1500);
+}
+
+// Keep only letters (any script) and whitespace; drop digits, punctuation and symbols
+function lettersOnly(s){
+  return s.replace(/[^\p{L}\p{M}\s]/gu, '')
+          .replace(/[ \t]+/g, ' ')
+          .replace(/ ?\n ?/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+}
+
+// Make dark-mode screenshots readable: invert when the background is dark
+async function prepare(file){
+  const bmp = await createImageBitmap(file);
+  const scale = bmp.width < 800 ? 2 : 1;
+  const c = document.createElement('canvas');
+  c.width = bmp.width * scale; c.height = bmp.height * scale;
+  const x = c.getContext('2d');
+  x.drawImage(bmp, 0, 0, c.width, c.height);
+  const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+  let sum = 0;
+  for(let i = 0; i < p.length; i += 4) sum += 0.299*p[i] + 0.587*p[i+1] + 0.114*p[i+2];
+  if(sum / (p.length / 4) < 128){
+    for(let i = 0; i < p.length; i += 4){ p[i] = 255-p[i]; p[i+1] = 255-p[i+1]; p[i+2] = 255-p[i+2]; }
+    x.putImageData(d, 0, 0);
+  }
+  return c;
+}
+
+// One clean line of words per row; drops stray icon letters (Q, IN, N, K, X...) and junk lines
+function cleanScreenshot(data){
+  if(!data.lines || !data.lines.length) return lettersOnly(data.text);
+  const out = [];
+  for(const ln of data.lines){
+    let t = ln.words.map(w => w.text.replace(/[^\p{L}\p{M}]/gu, '')).filter(Boolean);
+    if(t.length > 1 && t[0].length === 1 && !/^[AaIi]$/.test(t[0])) t.shift();
+    while(t.length > 1){
+      const last = t[t.length-1];
+      const othersLower = t.slice(0,-1).some(w => /[a-z]/.test(w));
+      if(last.length <= 2 && last === last.toUpperCase() && othersLower) t.pop(); else break;
+    }
+    if(t.join('').length < 3) continue;
+    const short = t.filter(w => w.length <= 2).length;
+    const max = Math.max(...t.map(w => w.length));
+    if(t.length >= 3 && short > t.length / 2 && max < 4) continue;
+    out.push(t.join(' '));
+  }
+  return out.join('\n');
+}
+
+async function run(){
+  runBtn.disabled = true; clearBtn.disabled = true;
+  const pending = items.filter(i => !i.done);
+  let worker;
+  try{
+    const lang = $('lang').value;
+    worker = await Tesseract.createWorker(lang);
+    if(lang === 'eng'){
+      await worker.setParameters({tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz '});
+    }
+    for(const it of pending){
+      const st = it.el.querySelector('.status'), pr = it.el.querySelector('progress');
+      st.className = 'status'; st.textContent = 'Reading…'; pr.hidden = false; pr.value = 0;
+      try{
+        const shot = $('shot').checked;
+        const { data } = await worker.recognize(shot ? await prepare(it.file) : it.file);
+        it.text = shot ? cleanScreenshot(data) : lettersOnly(data.text); it.done = true;
+        const ta = it.el.querySelector('textarea');
+        ta.value = it.text || '(No text found)'; ta.hidden = false;
+        it.el.querySelector('.row').hidden = false;
+        st.className = 'status done'; st.textContent = 'Done'; pr.value = 1;
+      }catch(e){
+        st.className = 'status error'; st.textContent = 'Failed: try a clearer image';
+      }
+      updateAll();
+    }
+  }catch(e){
+    alert('Could not start the text reader. Check your internet connection and try again.');
+  }finally{
+    if(worker) await worker.terminate();
+    refresh();
+  }
+}
+
+function updateAll(){
+  const parts = items.filter(i => i.done && i.text).map(i => i.text);
+  $('all').value = parts.join('\n');
+  $('combined').hidden = !parts.length;
+}
+
+drop.onclick = () => file.click();
+drop.onkeydown = e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); file.click(); } };
+file.onchange = () => { addFiles(file.files); file.value = ''; };
+['dragenter','dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+runBtn.onclick = run;
+clearBtn.onclick = () => { items.forEach(i => URL.revokeObjectURL(i.url)); items = []; list.innerHTML = ''; updateAll(); refresh(); };
+$('copy').onclick = () => copyFrom($('all'), $('copy'));
+$('download').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('all').value], {type: 'text/plain'}));
+  a.download = 'extracted-text.txt'; a.click();
+};
+</script>
+</body>
+</html>
