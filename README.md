@@ -8,6 +8,7 @@ A fast, private, client-side Optical Character Recognition (OCR) web tool that e
 
 ---
 
+live Demo :https://amith6491-netizen.github.io/imagetotext/
 ## 🌟 Overview
 
 **Image to Text** allows you to extract textual content from photos, documents, and screenshots without uploading anything to a remote server. Built with **Tesseract.js** (WebAssembly / Web Workers), all optical character recognition and image filtering execute locally on your machine.
